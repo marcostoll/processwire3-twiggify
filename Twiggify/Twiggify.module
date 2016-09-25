@@ -1,0 +1,231 @@
+<?php
+/**
+ * Class definition of Twiggify
+ *
+ * @author Marco Stoll <marco@fast-forward-encoding.de>
+ * @version 1.0.0
+ * @copyright 2016, Marco Stoll, https://github.com/marcostoll
+ * @filesource
+ * @todo check interaction with template cache
+ * @todo check interaction with module data providers
+ */
+
+namespace ffe\ProcessWire3;
+
+use ProcessWire\HookEvent;
+use ProcessWire\Module;
+use ProcessWire\TemplateFile;
+use ProcessWire\WireData;
+
+/**
+ * Class Twiggify
+ *
+ * @package ffe/ProcessWire3
+ * @property string $twigPath
+ * @property string $twigCache
+ * @property string $twigTemplates
+ * @property boolean $twigAutoReload
+ * @property boolean $twigStrictVariables
+ * @property string $twigAutoEscape
+ * @property boolean $twigDebug
+ * @property string $wireFuelImport
+ * @method \Twig_Environment initTwig(\Twig_LoaderInterface $twigLoader, array $twigOptions)
+ * @method \Twig_LoaderInterface initTwigLoader()
+ * @method string getTwigTemplate(TemplateFile $pwTemplate)
+ * @method array getTwigContext()
+ */
+class Twiggify extends WireData implements Module
+{
+    /**
+     * List of internal pw fuel keys to exclude from twig globals
+     */
+    const PW_FUEL_KEYS = [
+        'wire', 'classLoader', 'hooks', 'config', 'log', 'notices', 'sanitizer', 'datetime', 'files', 'mail',
+        'database', 'db', 'cache', 'modules', 'fieldtypes', 'fields', 'fieldgroups', 'templates', 'pages', 'page',
+        'permissions', 'roles', 'users', 'user', 'session', 'input', 'process'
+    ];
+
+    /**
+     * @var \Twig_Environment
+     */
+    protected $twig;
+
+    /**
+     * Retrieves the module information
+     *
+     * @return array
+     */
+	public static function getModuleInfo()
+    {
+		return [
+			'title' => 'Twiggify',
+			'version' => 101,
+			'summary' => 'Enables the usage of the Twig template engine',
+            'author' => 'Marco Stoll',
+            'requires' => 'ProcessWire>=3.0.14',
+            'autoload' => 'template!=admin',
+            'singular' => true,
+            'href' => 'https://github.com/marcostoll/processwire3-twiggify'
+		];
+	}
+
+    /**
+     * Creates the twig render engine if necessary
+     */
+    public function init()
+    {
+        if (!is_null($this->twig)) return;
+
+        $twigAutoLoadPath = $this->wire('config')->paths->root . $this->sanitizePath($this->twigPath);
+
+        // register Twig autoloader if necessary
+        if (!class_exists('Twig_autoloader')) {
+            if (!empty($twigAutoLoadPath) && is_file($twigAutoLoadPath)) {
+                require_once $twigAutoLoadPath;
+                spl_autoload_register(array('\Twig_Autoloader', 'autoload'));
+            } else {
+                // probably twig path not configured (correctly)
+                $this->error('unable to register Twig autoloader from path [' . $twigAutoLoadPath . ']');
+                return;
+            }
+        }
+
+        $twigOptions = array(
+            'cache'             => $this->wire('config')->paths->cache . $this->sanitizePath($this->twigCache), '/',
+            'auto_reload'       => (boolean)$this->twigAutoReload,
+            'strict_variables'  => (boolean)$this->twigStrictVariables,
+            'autoescape'        => $this->getAutoEscape($this->twigAutoEscape),
+            'debug'             => (boolean)$this->twigDebug
+        );
+
+        $twigLoader = $this->initTwigLoader();
+        $this->twig = $this->initTwig($twigLoader, $twigOptions);
+
+        // replace default template rendering by hooked method
+        $this->addHookBefore('TemplateFile::render', $this, 'twigRender');
+    }
+
+    /**
+     * Hook callback for TemplateFile::render
+     *
+     * Replaces default template rendering entirely.
+     *
+     * @param HookEvent $event The hook event
+     */
+    public function twigRender(HookEvent $event)
+    {
+        $page = $this->wire('page');
+
+        // don't mess with admin templates
+        if ($page->template == 'admin') return;
+
+        /** @var TemplateFile $pwTemplate */
+        $pwTemplate = $event->object;
+
+        // render twig template
+        $twigTemplate = $this->getTwigTemplate($pwTemplate);
+        $output = $this->twig->render($twigTemplate, $this->getTwigContext());
+
+        // replace rendering result
+        $event->replace  = true;
+        $event->return = $output;
+    }
+
+    /**
+     * Instantiates a Twig environment
+     *
+     * Provides a hook for other modules to tap into.
+     * By intercepting before the hook, e.g. the twig environment options can be manipulated.
+     * By intercepting after the hook, e.g. twig extensions may be added to the Twig_Environment instance.
+     *
+     * @param \Twig_LoaderInterface $twigLoader
+     * @param array $twigOptions
+     * @return \Twig_Environment
+     */
+    public function ___initTwig(\Twig_LoaderInterface $twigLoader, array $twigOptions)
+    {
+        $twig = new \Twig_Environment($twigLoader, $twigOptions);
+        $twigFunction = new \Twig_SimpleFunction('wr', function ($name) {
+            return $this->wire($name);
+        });
+        $twig->addFunction($twigFunction);
+
+        return $twig;
+    }
+
+    /**
+     * Instantiates the Twig Loader
+     *
+     * Provides a hook for other modules to tap into.
+     * E.g. by replacing the return value of this method, you may provide your own Twig Loader.
+     *
+     * @return \Twig_LoaderInterface
+     */
+    public function ___initTwigLoader()
+    {
+        $templatesPath = empty($this->twigTemplates) ?
+            $this->wire('config')->paths->templates :
+            $this->wire('config')->paths->root . $this->sanitizePath($this->twigTemplates);
+
+        return new \Twig_Loader_Filesystem($templatesPath);
+    }
+
+    /**
+     * Retrieves the twig template file to render for the current page
+     *
+     * Provides a hook for other modules to tap into.
+     *
+     * @param TemplateFile $pwTemplate
+     * @return string
+     */
+    public function ___getTwigTemplate(TemplateFile $pwTemplate)
+    {
+        return basename($pwTemplate->filename);
+    }
+
+    /**
+     * Retrieves the rendering context
+     *
+     * Provides a hook for other modules to tap into.
+     *
+     * @return array
+     */
+    public function ___getTwigContext()
+    {
+        $context = [];
+        $blackList = array_flip(self::PW_FUEL_KEYS);
+        $whiteList = array_flip(explode(',', preg_replace('~\s+~', '', $this->wireFuelImport)));
+        foreach ($this->wire()->fuel() as $key => $value) {
+            if (isset($blackList[$key]) && !isset($whiteList[$key])) continue;
+            $context[$key] = $value;
+        }
+
+        return $context;
+    }
+
+    /**
+     * Sanitizes a configurable path
+     *
+     * @param string $path
+     * @return string
+     */
+    protected function sanitizePath($path)
+    {
+        return trim(str_replace('\\', '/', $path), '/');
+    }
+
+    /**
+     * Computes the auto-escape strategy directive
+     *
+     * @param string $autoEscape
+     * @return boolean|string
+     */
+    protected function getAutoEscape($autoEscape)
+    {
+        switch ($autoEscape) {
+            case 'default': return true;
+            case 'disabled': return false;
+            default: return $autoEscape;
+        }
+    }
+}
