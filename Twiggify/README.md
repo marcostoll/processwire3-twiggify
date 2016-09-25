@@ -77,7 +77,7 @@ At least Twiggify gathers the contextual data to pass to **Twig_Environment::ren
 gather the configured wire fuel contents. By tapping into this hook you may add, remove, change any keys from the
 gathered context, or by-pass Twiggify's implementation at all.
 
-Use this as an simple example to add enable the Twig debug extension.
+Use this as a simple example to add enable the Twig debug extension.
 
     namespace ffe\ProcessWire3;
     
@@ -137,6 +137,7 @@ your ProcessWire backend won't work if you've change the template extension opti
 
 - check interaction with ProcessWire's template cache
 - check interaction with TemplateDataProviders module
+- try providing wire() instead of wr() as twig function, see [Twig Issue #2068](https://github.com/twigphp/Twig/issues/2068)
 
 ## License ##
 
